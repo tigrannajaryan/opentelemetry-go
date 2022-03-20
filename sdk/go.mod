@@ -6,7 +6,7 @@ replace go.opentelemetry.io/otel => ../
 
 require (
 	github.com/google/go-cmp v0.5.5
-	github.com/stretchr/testify v1.7.0
+	github.com/stretchr/testify v1.7.1
 	go.opentelemetry.io/otel v0.20.0
 	go.opentelemetry.io/otel/oteltest v0.20.0
 	go.opentelemetry.io/otel/trace v0.20.0
