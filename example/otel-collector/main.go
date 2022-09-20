@@ -25,6 +25,7 @@ import (
 	"os/signal"
 	"time"
 
+	"go.opentelemetry.io/otel/logs"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 
@@ -43,7 +44,8 @@ import (
 func initProvider() (func(context.Context) error, error) {
 	ctx := context.Background()
 
-	res, err := resource.New(ctx,
+	res, err := resource.New(
+		ctx,
 		resource.WithAttributes(
 			// the service name used to display traces in backends
 			semconv.ServiceNameKey.String("test-service"),
@@ -60,7 +62,9 @@ func initProvider() (func(context.Context) error, error) {
 	// probably connect directly to the service through dns
 	ctx, cancel := context.WithTimeout(ctx, time.Second)
 	defer cancel()
-	conn, err := grpc.DialContext(ctx, "localhost:30080", grpc.WithTransportCredentials(insecure.NewCredentials()), grpc.WithBlock())
+	conn, err := grpc.DialContext(
+		ctx, "localhost:30080", grpc.WithTransportCredentials(insecure.NewCredentials()), grpc.WithBlock(),
+	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create gRPC connection to collector: %w", err)
 	}
@@ -118,15 +122,46 @@ func main() {
 	ctx, span := tracer.Start(
 		ctx,
 		"CollectorExporter-Example",
-		trace.WithAttributes(commonAttrs...))
+		trace.WithAttributes(commonAttrs...),
+	)
 	defer span.End()
-	for i := 0; i < 10; i++ {
-		_, iSpan := tracer.Start(ctx, fmt.Sprintf("Sample-%d", i))
-		log.Printf("Doing really hard work (%d / 10)\n", i+1)
 
-		<-time.After(time.Second)
-		iSpan.End()
+	ctx = logWithSpan(ctx)
+
+	for i := 0; i < 10; i++ {
+		doHardWork(ctx, tracer, i)
 	}
 
 	log.Printf("Done!")
+}
+
+func doHardWork(ctx context.Context, tracer trace.Tracer, i int) {
+	logger := logs.FromContext(ctx)
+	logger.LogAttrs(logs.InfoLevel, "Begin doing really hard work", logs.Any("iter", i+1))
+
+	_, span := tracer.Start(ctx, fmt.Sprintf("Sample-%d", i))
+	ctx = logWithSpan(ctx)
+
+	doInnerWork(ctx, i)
+
+	span.End()
+}
+
+func doInnerWork(ctx context.Context, i int) {
+	logger := logs.FromContext(ctx)
+	logger.LogAttrs(logs.InfoLevel, "Continue doing really hard work", logs.Any("iter", i+1))
+	<-time.After(time.Second)
+}
+
+func logWithSpan(ctx context.Context) context.Context {
+	logger := logs.FromContext(ctx)
+	spanContext := trace.SpanContextFromContext(ctx)
+
+	ctx = logs.NewContext(
+		ctx, logger.With(
+			logs.Any("trace_id", spanContext.TraceID()),
+			logs.Any("span_id", spanContext.SpanID()),
+		),
+	)
+	return ctx
 }
