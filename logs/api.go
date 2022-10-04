@@ -6,6 +6,8 @@ import (
 	"io"
 	"os"
 	"time"
+
+	"go.opentelemetry.io/otel/trace"
 )
 
 type Attr struct {
@@ -68,12 +70,18 @@ func NewContext(ctx context.Context, l *Logger) context.Context {
 	return context.WithValue(ctx, ctxKey{}, l)
 }
 
+type ContextHandler interface {
+	UpdateWithContext(ctx context.Context) Handler
+}
+
 func FromContext(ctx context.Context) *Logger {
-	c, ok := ctx.Value(ctxKey{}).(*Logger)
-	if !ok {
-		c = Default()
+	if logger, ok := ctx.Value(ctxKey{}).(*Logger); ok {
+		if ch, ok := logger.Handler().(ContextHandler); ok {
+			return New(ch.UpdateWithContext(ctx))
+		}
+		return logger
 	}
-	return c
+	return Default()
 }
 
 func New(h Handler) *Logger {
@@ -108,17 +116,28 @@ func NewRecord(t time.Time, level Level, msg string, calldepth int) Record {
 	return Record{t: t, msg: msg}
 }
 
-type TextHandler struct {
-	w     io.Writer
-	attrs map[string]any
+type OtelHandler struct {
+	w           io.Writer
+	attrs       map[string]any
+	spanContext trace.SpanContext
 }
 
-func NewTextHandler(w io.Writer) *TextHandler {
-	return &TextHandler{w: w}
+func NewTextHandler(w io.Writer) *OtelHandler {
+	return &OtelHandler{w: w}
 }
 
-func (h *TextHandler) Handle(r Record) error {
+func (h *OtelHandler) Handle(r Record) error {
 	_, err := h.w.Write([]byte(r.msg))
+
+	if h.spanContext.IsValid() {
+		_, err = h.w.Write(
+			[]byte(fmt.Sprintf(
+				" trace_id=%v span_id=%v",
+				h.spanContext.TraceID(), h.spanContext.SpanID(),
+			)),
+		)
+	}
+
 	for k, v := range h.attrs {
 		h.w.Write([]byte(fmt.Sprintf(" %s=%v", k, v)))
 	}
@@ -129,7 +148,7 @@ func (h *TextHandler) Handle(r Record) error {
 	return err
 }
 
-func (h *TextHandler) With(attrs []Attr) Handler {
+func (h *OtelHandler) With(attrs []Attr) Handler {
 	m := map[string]any{}
 	for k, v := range h.attrs {
 		m[k] = v
@@ -138,5 +157,17 @@ func (h *TextHandler) With(attrs []Attr) Handler {
 		m[attr.k] = attr.v
 	}
 
-	return &TextHandler{w: h.w, attrs: m}
+	return &OtelHandler{w: h.w, attrs: m}
+}
+
+func (h *OtelHandler) UpdateWithContext(ctx context.Context) Handler {
+	spanContext := trace.SpanContextFromContext(ctx)
+	if spanContext.IsValid() {
+		return &OtelHandler{w: h.w, attrs: h.attrs, spanContext: spanContext}
+	}
+	return h
+
+	//h.attrs["trace_id"] = spanContext.TraceID()
+	//h.attrs["span_id"] = spanContext.SpanID()
+
 }

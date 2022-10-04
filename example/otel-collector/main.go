@@ -118,6 +118,8 @@ func main() {
 		attribute.String("attrC", "vanilla"),
 	}
 
+	ctx = logs.NewContext(ctx, logs.Default())
+
 	// work begins
 	ctx, span := tracer.Start(
 		ctx,
@@ -126,7 +128,7 @@ func main() {
 	)
 	defer span.End()
 
-	ctx = logWithSpan(ctx)
+	//ctx = logWithSpan(ctx)
 
 	for i := 0; i < 10; i++ {
 		doHardWork(ctx, tracer, i)
@@ -139,8 +141,8 @@ func doHardWork(ctx context.Context, tracer trace.Tracer, i int) {
 	logger := logs.FromContext(ctx)
 	logger.LogAttrs(logs.InfoLevel, "Begin doing really hard work", logs.Any("iter", i+1))
 
-	_, span := tracer.Start(ctx, fmt.Sprintf("Sample-%d", i))
-	ctx = logWithSpan(ctx)
+	ctx, span := tracer.Start(ctx, fmt.Sprintf("Sample-%d", i))
+	//ctx = logWithSpan(ctx)
 
 	doInnerWork(ctx, i)
 
@@ -153,15 +155,15 @@ func doInnerWork(ctx context.Context, i int) {
 	<-time.After(time.Second)
 }
 
-func logWithSpan(ctx context.Context) context.Context {
-	logger := logs.FromContext(ctx)
-	spanContext := trace.SpanContextFromContext(ctx)
-
-	ctx = logs.NewContext(
-		ctx, logger.With(
-			logs.Any("trace_id", spanContext.TraceID()),
-			logs.Any("span_id", spanContext.SpanID()),
-		),
-	)
-	return ctx
-}
+//func logWithSpan(ctx context.Context) context.Context {
+//	logger := logs.FromContext(ctx)
+//	spanContext := trace.SpanContextFromContext(ctx)
+//
+//	ctx = logs.NewContext(
+//		ctx, logger.With(
+//			logs.Any("trace_id", spanContext.TraceID()),
+//			logs.Any("span_id", spanContext.SpanID()),
+//		),
+//	)
+//	return ctx
+//}
