@@ -1,20 +1,3 @@
-// Copyright The OpenTelemetry Authors
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
-
-// Example using OTLP exporters + collector + third-party backends. For
-// information about using the exporter, see:
-// https://pkg.go.dev/go.opentelemetry.io/otel/exporters/otlp?tab=doc#example-package-Insecure
 package main
 
 import (
@@ -25,18 +8,17 @@ import (
 	"os/signal"
 	"time"
 
-	"go.opentelemetry.io/otel/logs"
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials/insecure"
-
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc"
+	logs "go.opentelemetry.io/otel/logs2"
 	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/sdk/resource"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
-	semconv "go.opentelemetry.io/otel/semconv/v1.12.0"
+	semconv "go.opentelemetry.io/otel/semconv/v1.4.0"
 	"go.opentelemetry.io/otel/trace"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
 )
 
 // Initializes an OTLP exporter, and configures the corresponding trace and
@@ -118,7 +100,9 @@ func main() {
 		attribute.String("attrC", "vanilla"),
 	}
 
-	ctx = logs.NewContext(ctx, logs.Default())
+	// Setup Otel Logger
+	logger := logs.New(logs.NewOtelHandler(os.Stdout))
+	ctx = logs.NewContext(ctx, logger)
 
 	// work begins
 	ctx, span := tracer.Start(
@@ -137,9 +121,9 @@ func main() {
 
 func doHardWork(ctx context.Context, tracer trace.Tracer, i int) {
 	logger := logs.FromContext(ctx)
-	logger.LogAttrs(logs.InfoLevel, "Begin doing really hard work", logs.Any("iter", i+1))
+	logger.LogAttrs(ctx, logs.InfoLevel, "Begin doing really hard work", logs.Any("iter", i+1))
 
-	ctx, span := tracer.Start(ctx, fmt.Sprintf("Sample-%d", i))
+	_, span := tracer.Start(ctx, fmt.Sprintf("Sample-%d", i))
 
 	doInnerWork(ctx, i)
 
@@ -148,6 +132,6 @@ func doHardWork(ctx context.Context, tracer trace.Tracer, i int) {
 
 func doInnerWork(ctx context.Context, i int) {
 	logger := logs.FromContext(ctx)
-	logger.LogAttrs(logs.InfoLevel, "Continue doing really hard work", logs.Any("iter", i+1))
+	logger.LogAttrs(ctx, logs.InfoLevel, "Continue doing really hard work", logs.Any("iter", i+1))
 	<-time.After(time.Second)
 }

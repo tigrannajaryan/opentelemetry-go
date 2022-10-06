@@ -21,17 +21,19 @@ func (h *OtelHandler) Handle(ctx context.Context, r Record) error {
 
 	spanContext := trace.SpanContextFromContext(ctx)
 	if spanContext.IsValid() {
-
+		_, err := h.w.Write(
+			[]byte(fmt.Sprintf(
+				"%s trace_id=%v span_id=%v", r.msg,
+				spanContext.TraceID(), spanContext.SpanID(),
+			)),
+		)
+		if err != nil {
+			return err
+		}
+	} else {
+		h.w.Write([]byte(r.msg))
 	}
 
-	_, err := h.w.Write(
-		[]byte(fmt.Sprintf(
-			"%s trace_id=%v span_id=%v", r.msg,
-			spanContext.TraceID(), spanContext.SpanID(),
-		)),
-	)
-
-	_, err = h.w.Write([]byte(r.msg))
 	for k, v := range h.attrs {
 		h.w.Write([]byte(fmt.Sprintf(" %s=%v", k, v)))
 	}
@@ -39,7 +41,7 @@ func (h *OtelHandler) Handle(ctx context.Context, r Record) error {
 		h.w.Write([]byte(fmt.Sprintf(" %s=%v", attr.k, attr.v)))
 	}
 	h.w.Write([]byte("\n"))
-	return err
+	return nil
 }
 
 // With returns a new Handler whose attributes consist of
