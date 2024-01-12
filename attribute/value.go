@@ -34,7 +34,7 @@ type Value struct {
 	vtype    Type
 	numeric  uint64
 	stringly string
-	slice    interface{}
+	other    interface{}
 }
 
 const (
@@ -56,6 +56,12 @@ const (
 	FLOAT64SLICE
 	// STRINGSLICE is a slice of strings Type Value.
 	STRINGSLICE
+	// SLICE is a slice of values of any type other than INVALID type.
+	// Cannot be used as metric attribute.
+	SLICE
+	// MAP is a key/value map, where key is a string, value is of any type other than INVALID type.
+	// Cannot be used as metric attribute.
+	MAP
 )
 
 // BoolValue creates a BOOL Value.
@@ -68,7 +74,7 @@ func BoolValue(v bool) Value {
 
 // BoolSliceValue creates a BOOLSLICE Value.
 func BoolSliceValue(v []bool) Value {
-	return Value{vtype: BOOLSLICE, slice: attribute.BoolSliceValue(v)}
+	return Value{vtype: BOOLSLICE, other: attribute.BoolSliceValue(v)}
 }
 
 // IntValue creates an INT64 Value.
@@ -85,7 +91,7 @@ func IntSliceValue(v []int) Value {
 	}
 	return Value{
 		vtype: INT64SLICE,
-		slice: cp.Elem().Interface(),
+		other: cp.Elem().Interface(),
 	}
 }
 
@@ -99,7 +105,7 @@ func Int64Value(v int64) Value {
 
 // Int64SliceValue creates an INT64SLICE Value.
 func Int64SliceValue(v []int64) Value {
-	return Value{vtype: INT64SLICE, slice: attribute.Int64SliceValue(v)}
+	return Value{vtype: INT64SLICE, other: attribute.Int64SliceValue(v)}
 }
 
 // Float64Value creates a FLOAT64 Value.
@@ -112,7 +118,7 @@ func Float64Value(v float64) Value {
 
 // Float64SliceValue creates a FLOAT64SLICE Value.
 func Float64SliceValue(v []float64) Value {
-	return Value{vtype: FLOAT64SLICE, slice: attribute.Float64SliceValue(v)}
+	return Value{vtype: FLOAT64SLICE, other: attribute.Float64SliceValue(v)}
 }
 
 // StringValue creates a STRING Value.
@@ -125,7 +131,15 @@ func StringValue(v string) Value {
 
 // StringSliceValue creates a STRINGSLICE Value.
 func StringSliceValue(v []string) Value {
-	return Value{vtype: STRINGSLICE, slice: attribute.StringSliceValue(v)}
+	return Value{vtype: STRINGSLICE, other: attribute.StringSliceValue(v)}
+}
+
+// SliceValue creates a SLICE Value.
+func SliceValue(v []Value) Value {
+	var zero Value
+	cp := reflect.New(reflect.ArrayOf(len(v), reflect.TypeOf(zero)))
+	copy(cp.Elem().Slice(0, len(v)).Interface().([]Value), v)
+	return Value{vtype: SLICE, other: cp.Elem().Interface()}
 }
 
 // Type returns a type of the Value.
@@ -149,7 +163,7 @@ func (v Value) AsBoolSlice() []bool {
 }
 
 func (v Value) asBoolSlice() []bool {
-	return attribute.AsBoolSlice(v.slice)
+	return attribute.AsBoolSlice(v.other)
 }
 
 // AsInt64 returns the int64 value. Make sure that the Value's type is
@@ -168,7 +182,7 @@ func (v Value) AsInt64Slice() []int64 {
 }
 
 func (v Value) asInt64Slice() []int64 {
-	return attribute.AsInt64Slice(v.slice)
+	return attribute.AsInt64Slice(v.other)
 }
 
 // AsFloat64 returns the float64 value. Make sure that the Value's
@@ -187,7 +201,7 @@ func (v Value) AsFloat64Slice() []float64 {
 }
 
 func (v Value) asFloat64Slice() []float64 {
-	return attribute.AsFloat64Slice(v.slice)
+	return attribute.AsFloat64Slice(v.other)
 }
 
 // AsString returns the string value. Make sure that the Value's type
@@ -206,7 +220,28 @@ func (v Value) AsStringSlice() []string {
 }
 
 func (v Value) asStringSlice() []string {
-	return attribute.AsStringSlice(v.slice)
+	return attribute.AsStringSlice(v.other)
+}
+
+func (v Value) AsSlice() []Value {
+	if v.vtype != SLICE {
+		return nil
+	}
+	return v.asSlice()
+}
+
+func (v Value) asSlice() []Value {
+	// AsSlice converts an array into a slice into with same elements as array.
+	rv := reflect.ValueOf(v.other)
+	if rv.Type().Kind() != reflect.Array {
+		return nil
+	}
+	var zero Value
+	correctLen := rv.Len()
+	correctType := reflect.ArrayOf(correctLen, reflect.TypeOf(zero))
+	cpy := reflect.New(correctType)
+	_ = reflect.Copy(cpy.Elem(), rv)
+	return cpy.Elem().Slice(0, correctLen).Interface().([]Value)
 }
 
 type unknownValueType struct{}
@@ -230,6 +265,8 @@ func (v Value) AsInterface() interface{} {
 		return v.stringly
 	case STRINGSLICE:
 		return v.asStringSlice()
+	case SLICE:
+		return v.asSlice()
 	}
 	return unknownValueType{}
 }
@@ -253,6 +290,9 @@ func (v Value) Emit() string {
 		return fmt.Sprint(v.asStringSlice())
 	case STRING:
 		return v.stringly
+	case SLICE:
+		b, _ := v.MarshalJSON()
+		return string(b)
 	default:
 		return "unknown"
 	}
@@ -260,6 +300,8 @@ func (v Value) Emit() string {
 
 // MarshalJSON returns the JSON encoding of the Value.
 func (v Value) MarshalJSON() ([]byte, error) {
+	// TODO: JSON marshaling for SLICE and MAP is not yet implemented.
+
 	var jsonVal struct {
 		Type  string
 		Value interface{}
