@@ -113,9 +113,11 @@ func (l *Set) Value(k Key) (Value, bool) {
 	rValue := l.equivalent.reflectValue()
 	vlen := rValue.Len()
 
-	idx := sort.Search(vlen, func(idx int) bool {
-		return rValue.Index(idx).Interface().(KeyValue).Key >= k
-	})
+	idx := sort.Search(
+		vlen, func(idx int) bool {
+			return rValue.Index(idx).Interface().(KeyValue).Key >= k
+		},
+	)
 	if idx >= vlen {
 		return Value{}, false
 	}
@@ -173,6 +175,63 @@ func (l *Set) Encoded(encoder Encoder) string {
 	}
 
 	return encoder.Encode(l.Iter())
+}
+
+func (l *Set) IsComplex() bool {
+	value := l.equivalent.reflectValue()
+	len := value.Len()
+	iface := l.equivalent.iface
+
+	var slice []KeyValue
+	switch len {
+	case 1:
+		arr := iface.([1]KeyValue)
+		slice = arr[:]
+	case 2:
+		arr := iface.([2]KeyValue)
+		slice = arr[:]
+	case 3:
+		arr := iface.([3]KeyValue)
+		slice = arr[:]
+	case 4:
+		arr := iface.([4]KeyValue)
+		slice = arr[:]
+	case 5:
+		arr := iface.([5]KeyValue)
+		slice = arr[:]
+	case 6:
+		arr := iface.([6]KeyValue)
+		slice = arr[:]
+	case 7:
+		arr := iface.([7]KeyValue)
+		slice = arr[:]
+	case 8:
+		arr := iface.([8]KeyValue)
+		slice = arr[:]
+	case 9:
+		arr := iface.([9]KeyValue)
+		slice = arr[:]
+	case 10:
+		arr := iface.([10]KeyValue)
+		slice = arr[:]
+	default:
+		for i := 0; i < len; i++ {
+			elem := value.Index(i).Interface().(KeyValue)
+			switch t := elem.Value.Type(); t {
+			case SLICE, MAP:
+				return true
+			}
+		}
+		return false
+	}
+	for i := 0; i < len; i++ {
+		elem := slice[i]
+		switch t := elem.Value.Type(); t {
+		case SLICE, MAP:
+			return true
+		}
+	}
+	return false
 }
 
 func empty() Set {

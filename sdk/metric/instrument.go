@@ -208,17 +208,22 @@ func (i *int64Inst) Record(ctx context.Context, val int64, opts ...metric.Record
 var errUnsupportedAttr = errors.New("unsupported attribute value type")
 
 func checkAttr(set attribute.Set) error {
-	iter := set.Iter()
-	for iter.Next() {
-		switch t := iter.Attribute().Value.Type(); t {
-		case attribute.SLICE, attribute.MAP:
-			return fmt.Errorf("%v: %s", errUnsupportedAttr, t)
-		}
+	//iter := set.Iter()
+	//for iter.Next() {
+	//	switch t := iter.Attribute().Value.Type(); t {
+	//	case attribute.SLICE, attribute.MAP:
+	//		return fmt.Errorf("%v: %s", errUnsupportedAttr, t)
+	//	}
+	//}
+	if set.IsComplex() {
+		return errUnsupportedAttr
 	}
 	return nil
 }
 
-func (i *int64Inst) aggregate(ctx context.Context, val int64, s attribute.Set) { // nolint:revive  // okay to shadow pkg with method.
+func (i *int64Inst) aggregate(
+	ctx context.Context, val int64, s attribute.Set,
+) { // nolint:revive  // okay to shadow pkg with method.
 	if err := checkAttr(s); err != nil {
 		global.Error(err, "dropping measurement", "context", ctx, "value", val)
 		return
