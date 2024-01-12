@@ -23,6 +23,7 @@ import (
 	"strings"
 
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/internal/global"
 	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/metric/embedded"
 	"go.opentelemetry.io/otel/sdk/instrumentation"
@@ -204,7 +205,25 @@ func (i *int64Inst) Record(ctx context.Context, val int64, opts ...metric.Record
 	i.aggregate(ctx, val, c.Attributes())
 }
 
+var errUnsupportedAttr = errors.New("unsupported attribute value type")
+
+func checkAttr(set attribute.Set) error {
+	iter := set.Iter()
+	for iter.Next() {
+		switch t := iter.Attribute().Value.Type(); t {
+		case attribute.SLICE, attribute.MAP:
+			return fmt.Errorf("%v: %s", errUnsupportedAttr, t)
+		}
+	}
+	return nil
+}
+
 func (i *int64Inst) aggregate(ctx context.Context, val int64, s attribute.Set) { // nolint:revive  // okay to shadow pkg with method.
+	if err := checkAttr(s); err != nil {
+		global.Error(err, "dropping measurement", "context", ctx, "value", val)
+		return
+	}
+
 	for _, in := range i.measures {
 		in(ctx, val, s)
 	}
@@ -235,6 +254,11 @@ func (i *float64Inst) Record(ctx context.Context, val float64, opts ...metric.Re
 }
 
 func (i *float64Inst) aggregate(ctx context.Context, val float64, s attribute.Set) {
+	if err := checkAttr(s); err != nil {
+		global.Error(err, "dropping measurement", "context", ctx, "value", val)
+		return
+	}
+
 	for _, in := range i.measures {
 		in(ctx, val, s)
 	}
@@ -326,6 +350,11 @@ type measures[N int64 | float64] []aggregate.Measure[N]
 
 // observe records the val for the set of attrs.
 func (m measures[N]) observe(val N, s attribute.Set) {
+	if err := checkAttr(s); err != nil {
+		global.Error(err, "dropping measurement", "value", val)
+		return
+	}
+
 	for _, in := range m {
 		in(context.Background(), val, s)
 	}
