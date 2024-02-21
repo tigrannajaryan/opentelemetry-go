@@ -16,11 +16,13 @@ package resource // import "go.opentelemetry.io/otel/sdk/resource"
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"sync"
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/sdk/resource/internal"
 )
 
 // Resource describes an entity about which identifying information
@@ -31,8 +33,10 @@ import (
 // (`*resource.Resource`).  The `nil` value is equivalent to an empty
 // Resource.
 type Resource struct {
-	attrs     attribute.Set
 	schemaURL string
+
+	// Producing entity.
+	entity internal.EntityData
 }
 
 var (
@@ -49,7 +53,16 @@ func New(ctx context.Context, opts ...Option) (*Resource, error) {
 		cfg = opt.apply(cfg)
 	}
 
-	r := &Resource{schemaURL: cfg.schemaURL}
+	entityId, _ := attribute.NewSetWithFiltered(
+		cfg.entityId, func(kv attribute.KeyValue) bool {
+			return kv.Valid()
+		},
+	)
+
+	r := &Resource{
+		schemaURL: cfg.schemaURL,
+		entity:    internal.EntityData{Type: cfg.entityType, Id: entityId},
+	}
 	return r, detect(ctx, r, cfg.detectors)
 }
 
@@ -60,6 +73,30 @@ func New(ctx context.Context, opts ...Option) (*Resource, error) {
 func NewWithAttributes(schemaURL string, attrs ...attribute.KeyValue) *Resource {
 	resource := NewSchemaless(attrs...)
 	resource.schemaURL = schemaURL
+	return resource
+}
+
+// NewWithEntity creates a resource from entity and attrs and associates the resource with a
+// schema URL. If attrs or entityId contains duplicate keys, the last value will be used. If attrs or entityId
+// contains any invalid items those items will be dropped. The attrs and entityId are assumed to be
+// in a schema identified by schemaURL.
+func NewWithEntity(
+	schemaURL string, entity *internal.EntityData,
+) *Resource {
+	resource := NewSchemaless(entity.Attrs.ToSlice()...)
+	resource.schemaURL = schemaURL
+	resource.entity = *entity
+	//resource.entity.Type = entityType
+
+	// Ensure attributes comply with the specification:
+	// https://github.com/open-telemetry/opentelemetry-specification/blob/v1.20.0/specification/common/README.md#attribute
+	//id, _ := attribute.NewSetWithFiltered(
+	//	entityId, func(kv attribute.KeyValue) bool {
+	//		return kv.Valid()
+	//	},
+	//)
+	//
+	//resource.entity.Id = id
 	return resource
 }
 
@@ -74,16 +111,18 @@ func NewSchemaless(attrs ...attribute.KeyValue) *Resource {
 
 	// Ensure attributes comply with the specification:
 	// https://github.com/open-telemetry/opentelemetry-specification/blob/v1.20.0/specification/common/README.md#attribute
-	s, _ := attribute.NewSetWithFiltered(attrs, func(kv attribute.KeyValue) bool {
-		return kv.Valid()
-	})
+	s, _ := attribute.NewSetWithFiltered(
+		attrs, func(kv attribute.KeyValue) bool {
+			return kv.Valid()
+		},
+	)
 
 	// If attrs only contains invalid entries do not allocate a new resource.
 	if s.Len() == 0 {
 		return &Resource{}
 	}
 
-	return &Resource{attrs: s} //nolint
+	return &Resource{entity: internal.EntityData{Id: attribute.NewSet(), Attrs: s}} //nolint
 }
 
 // String implements the Stringer interface and provides a
@@ -95,7 +134,7 @@ func (r *Resource) String() string {
 	if r == nil {
 		return ""
 	}
-	return r.attrs.Encoded(attribute.DefaultEncoder())
+	return r.entity.Attrs.Encoded(attribute.DefaultEncoder())
 }
 
 // MarshalLog is the marshaling function used by the logging system to represent this Resource.
@@ -104,7 +143,7 @@ func (r *Resource) MarshalLog() interface{} {
 		Attributes attribute.Set
 		SchemaURL  string
 	}{
-		Attributes: r.attrs,
+		Attributes: r.entity.Attrs,
 		SchemaURL:  r.schemaURL,
 	}
 }
@@ -115,7 +154,7 @@ func (r *Resource) Attributes() []attribute.KeyValue {
 	if r == nil {
 		r = Empty()
 	}
-	return r.attrs.ToSlice()
+	return r.entity.Attrs.ToSlice()
 }
 
 // SchemaURL returns the schema URL associated with Resource r.
@@ -126,13 +165,27 @@ func (r *Resource) SchemaURL() string {
 	return r.schemaURL
 }
 
+func (r *Resource) EntityId() *attribute.Set {
+	if r == nil {
+		return attribute.EmptySet()
+	}
+	return &r.entity.Id
+}
+
+func (r *Resource) EntityType() string {
+	if r == nil {
+		return ""
+	}
+	return r.entity.Type
+}
+
 // Iter returns an iterator of the Resource attributes.
 // This is ideal to use if you do not want a copy of the attributes.
 func (r *Resource) Iter() attribute.Iterator {
 	if r == nil {
 		r = Empty()
 	}
-	return r.attrs.Iter()
+	return r.entity.Attrs.Iter()
 }
 
 // Equal returns true when a Resource is equivalent to this Resource.
@@ -180,14 +233,9 @@ func Merge(a, b *Resource) (*Resource, error) {
 		return Empty(), errMergeConflictSchemaURL
 	}
 
-	// Note: 'b' attributes will overwrite 'a' with last-value-wins in attribute.Key()
-	// Meaning this is equivalent to: append(a.Attributes(), b.Attributes()...)
-	mi := attribute.NewMergeIterator(b.Set(), a.Set())
-	combine := make([]attribute.KeyValue, 0, a.Len()+b.Len())
-	for mi.Next() {
-		combine = append(combine, mi.Attribute())
-	}
-	merged := NewWithAttributes(schemaURL, combine...)
+	mergedEntity := internal.MergeEntities(&a.entity, &b.entity)
+	merged := NewWithEntity(schemaURL, mergedEntity)
+
 	return merged, nil
 }
 
@@ -200,22 +248,24 @@ func Empty() *Resource {
 // Default returns an instance of Resource with a default
 // "service.name" and OpenTelemetrySDK attributes.
 func Default() *Resource {
-	defaultResourceOnce.Do(func() {
-		var err error
-		defaultResource, err = Detect(
-			context.Background(),
-			defaultServiceNameDetector{},
-			fromEnv{},
-			telemetrySDK{},
-		)
-		if err != nil {
-			otel.Handle(err)
-		}
-		// If Detect did not return a valid resource, fall back to emptyResource.
-		if defaultResource == nil {
-			defaultResource = &Resource{}
-		}
-	})
+	defaultResourceOnce.Do(
+		func() {
+			var err error
+			defaultResource, err = Detect(
+				context.Background(),
+				defaultServiceNameDetector{},
+				fromEnv{},
+				telemetrySDK{},
+			)
+			if err != nil {
+				otel.Handle(err)
+			}
+			// If Detect did not return a valid resource, fall back to emptyResource.
+			if defaultResource == nil {
+				defaultResource = &Resource{}
+			}
+		},
+	)
 	return defaultResource
 }
 
@@ -242,7 +292,7 @@ func (r *Resource) Set() *attribute.Set {
 	if r == nil {
 		r = Empty()
 	}
-	return &r.attrs
+	return &r.entity.Attrs
 }
 
 // MarshalJSON encodes the resource attributes as a JSON list of { "Key":
@@ -251,7 +301,27 @@ func (r *Resource) MarshalJSON() ([]byte, error) {
 	if r == nil {
 		r = Empty()
 	}
-	return r.attrs.MarshalJSON()
+
+	rjson := struct {
+		Attributes any
+		SchemaURL  string
+		Entity     struct {
+			Type string
+			Id   any
+		}
+	}{
+		Attributes: r.entity.Attrs.MarshalableToJSON(),
+		SchemaURL:  r.schemaURL,
+		Entity: struct {
+			Type string
+			Id   any
+		}{
+			Type: r.entity.Type,
+			Id:   r.entity.Id.MarshalableToJSON(),
+		},
+	}
+
+	return json.Marshal(rjson)
 }
 
 // Len returns the number of unique key-values in this Resource.
@@ -259,7 +329,7 @@ func (r *Resource) Len() int {
 	if r == nil {
 		return 0
 	}
-	return r.attrs.Len()
+	return r.entity.Attrs.Len()
 }
 
 // Encoded returns an encoded representation of the resource.
@@ -267,5 +337,5 @@ func (r *Resource) Encoded(enc attribute.Encoder) string {
 	if r == nil {
 		return ""
 	}
-	return r.attrs.Encoded(enc)
+	return r.entity.Attrs.Encoded(enc)
 }
