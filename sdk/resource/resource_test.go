@@ -865,3 +865,8 @@ func (f fakeDetector) Detect(_ context.Context) (*resource.Resource, error) {
 }
 
 var _ resource.Detector = &fakeDetector{}
+
+func TestResourceComparable(t *testing.T) {
+	//var m map[resource.Resource]int
+	//m[resource.Resource{}] = 123
+}

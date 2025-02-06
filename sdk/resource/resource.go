@@ -33,14 +33,16 @@ import (
 // (`*resource.Resource`).  The `nil` value is equivalent to an empty
 // Resource.
 type Resource struct {
-	attrs map[attribute.Key]attribute.Value
+	//attrs map[attribute.Key]attribute.Value
 
 	// attrSet is cached attribute.Set representation of attrs.
 	attrSet attribute.Set
 
 	schemaURL  string
-	entityRefs []resourceEntityRef
+	entityRefs resourceEntityRefs
 }
+
+var _ = map[Resource]int{}
 
 var (
 	defaultResource     *Resource
@@ -81,39 +83,43 @@ func NewWithEntities(
 
 	for _, entity := range entities {
 		b := &Resource{
-			schemaURL:  entity.SchemaURL,
-			attrs:      map[attribute.Key]attribute.Value{},
-			entityRefs: []resourceEntityRef{{}},
+			schemaURL: entity.SchemaURL,
+			//attrs:      map[attribute.Key]attribute.Value{},
 		}
-
-		entityRef := &b.entityRefs[0]
-		entityRef.typ = entity.Type
-		entityRef.id = map[attribute.Key]bool{}
-		entityRef.attrs = map[attribute.Key]bool{}
-		entityRef.schemaUrl = entity.SchemaURL
+		bAttrs := map[attribute.Key]attribute.Value{}
 
 		ids := entity.Id.Iter()
+		var entityRefIds []string
 		for ids.Next() {
 			attr := ids.Attribute()
 			if !attr.Valid() {
 				continue
 			}
-			entityRef.id[attr.Key] = true
-			b.attrs[attr.Key] = attr.Value
+			entityRefIds = append(entityRefIds, string(attr.Key))
+			bAttrs[attr.Key] = attr.Value
 		}
 		attrs := entity.Attrs.Iter()
+		var entityRefAttrs []string
 		for attrs.Next() {
 			attr := attrs.Attribute()
 			if !attr.Valid() {
 				continue
 			}
-			if _, exists := b.attrs[attr.Key]; exists {
+			if _, exists := bAttrs[attr.Key]; exists {
 				return nil, fmt.Errorf("invalid Entity, key %q is both an id and Attr", attr.Key)
 			}
-			entityRef.attrs[attr.Key] = true
-			b.attrs[attr.Key] = attr.Value
+			entityRefAttrs = append(entityRefAttrs, string(attr.Key))
+			bAttrs[attr.Key] = attr.Value
 		}
-		entityRef.updateCache()
+		b.attrSet = mapAttrsToSet(bAttrs)
+
+		entityRef := resourceEntityRef{
+			typ:       entity.Type,
+			schemaUrl: entity.SchemaURL,
+			id:        keysToSet(entityRefIds),
+			attrs:     keysToSet(entityRefAttrs),
+		}
+		b.entityRefs = NewResourceEntityRefs([]resourceEntityRef{entityRef})
 
 		var err error
 		resource, err = Merge(resource, b)
@@ -148,8 +154,7 @@ func NewSchemaless(attrs ...attribute.KeyValue) *Resource {
 		return &Resource{}
 	}
 
-	r := &Resource{attrs: m}
-	r.updateCache()
+	r := &Resource{attrSet: mapAttrsToSet(m)}
 	return r
 }
 
@@ -170,6 +175,16 @@ func mapAttrsToSet(m map[attribute.Key]attribute.Value) attribute.Set {
 	return attribute.NewSet(mapAttrsToSlice(m)...)
 }
 
+func attrSetToMap(set attribute.Set) map[attribute.Key]attribute.Value {
+	m := make(map[attribute.Key]attribute.Value, set.Len())
+	iter := set.Iter()
+	for iter.Next() {
+		kv := iter.Attribute()
+		m[kv.Key] = kv.Value
+	}
+	return m
+}
+
 // String implements the Stringer interface and provides a
 // human-readable form of the resource.
 //
@@ -179,8 +194,7 @@ func (r *Resource) String() string {
 	if r == nil {
 		return ""
 	}
-	s := mapAttrsToSet(r.attrs)
-	return s.Encoded(attribute.DefaultEncoder())
+	return r.attrSet.Encoded(attribute.DefaultEncoder())
 }
 
 // MarshalLog is the marshaling function used by the logging system to represent this Resource.
@@ -189,7 +203,7 @@ func (r *Resource) MarshalLog() interface{} {
 		Attributes attribute.Set
 		SchemaURL  string
 	}{
-		Attributes: mapAttrsToSet(r.attrs),
+		Attributes: r.attrSet,
 		SchemaURL:  r.schemaURL,
 	}
 }
@@ -200,7 +214,7 @@ func (r *Resource) Attributes() []attribute.KeyValue {
 	if r == nil {
 		r = Empty()
 	}
-	return mapAttrsToSlice(r.attrs)
+	return r.attrSet.ToSlice()
 }
 
 // SchemaURL returns the schema URL associated with Resource r.
@@ -274,31 +288,41 @@ func merge(a, b *Resource, options mergeOptions) (*Resource, error) {
 	}
 
 	merged := &Resource{
-		attrs:      cloneAttrs(a.attrs),
-		schemaURL:  schemaURL,
-		entityRefs: make([]resourceEntityRef, len(a.entityRefs)),
+		//attrs:      cloneAttrs(a.attrs),
+		attrSet:   a.attrSet,
+		schemaURL: schemaURL,
 	}
-	for k, v := range b.attrs {
-		merged.attrs[k] = v
+	mergedAttrs := attrSetToMap(a.attrSet)
+	bAttrs := attrSetToMap(b.attrSet)
+	for k, v := range bAttrs {
+		mergedAttrs[k] = v
 	}
 
-	copy(merged.entityRefs, a.entityRefs)
+	entityRefs := a.entityRefs.AsSlice()
 
 	entityTypes := map[string]resourceEntityRef{}
-	for _, er := range a.entityRefs {
+	for i := 0; i < a.entityRefs.Len(); i++ {
+		er, ok := a.entityRefs.Get(i)
+		if !ok {
+			panic("internal error")
+		}
 		entityTypes[er.typ] = er
 	}
 
-	for _, er := range b.entityRefs {
+	for i := 0; i < b.entityRefs.Len(); i++ {
+		er, ok := b.entityRefs.Get(i)
+		if !ok {
+			panic("internal error")
+		}
 		if existingEr, exists := entityTypes[er.typ]; !exists {
-			merged.entityRefs = append(merged.entityRefs, er)
+			entityRefs = append(entityRefs, er)
 			entityTypes[er.typ] = er
 
-			for k := range er.id {
-				merged.attrs[k] = b.attrs[k]
+			for _, k := range er.id.ToSlice() {
+				mergedAttrs[k.Key] = bAttrs[k.Key]
 			}
-			for k := range er.attrs {
-				merged.attrs[k] = b.attrs[k]
+			for _, k := range er.attrs.ToSlice() {
+				mergedAttrs[k.Key] = bAttrs[k.Key]
 			}
 
 		} else {
@@ -308,8 +332,8 @@ func merge(a, b *Resource, options mergeOptions) (*Resource, error) {
 			}
 		}
 	}
-
-	merged.updateCache()
+	merged.attrSet = mapAttrsToSet(mergedAttrs)
+	merged.entityRefs = NewResourceEntityRefs(entityRefs)
 
 	return merged, nil
 }
@@ -447,12 +471,12 @@ func (r *Resource) MarshalJSON() ([]byte, error) {
 		Attributes: r.attrSet.MarshalableToJSON(),
 		SchemaURL:  r.schemaURL,
 	}
-	for _, er := range r.entityRefs {
+	for _, er := range r.entityRefs.AsSlice() {
 		rjson.EntityRefs = append(
 			rjson.EntityRefs, entityRef{
 				Type:      er.typ,
-				Id:        er.idAsSlice,
-				Attrs:     er.attrsAsSlice,
+				Id:        er.Id(),
+				Attrs:     er.Attrs(),
 				SchemaURL: er.schemaUrl,
 			},
 		)
@@ -466,7 +490,7 @@ func (r *Resource) Len() int {
 	if r == nil {
 		return 0
 	}
-	return len(r.attrs)
+	return r.attrSet.Len()
 }
 
 // Encoded returns an encoded representation of the resource.
@@ -485,10 +509,10 @@ func (r *Resource) getEntityDescr(entity resourceEntityRef) (attribute.Set, erro
 	return r.getAttrsByKeys(entity.attrs)
 }
 
-func (r *Resource) getAttrsByKeys(keys map[attribute.Key]bool) (attribute.Set, error) {
+func (r *Resource) getAttrsByKeys(keys attribute.Set) (attribute.Set, error) {
 	var id []attribute.KeyValue
 	for key := range keys {
-		val, exists := r.attrs[key]
+		val, exists := r.attrSet.Value(key)
 		if !exists {
 			return attribute.NewSet(), fmt.Errorf(
 				"invalid resourceEntityRef, key %s not found in Resource attrs", key,
@@ -504,21 +528,23 @@ func (r *Resource) mergeEntity(entity resourceEntityRef, id, attrs attribute.Set
 	if idx < 0 {
 		return errors.New("invalid resourceEntityRef")
 	}
-	updateEnt := &r.entityRefs[idx]
+	updateEnt := &r.entityRefs.AsSlice()[idx]
+	m := attrSetToMap(r.attrSet)
 
 	iter := id.Iter()
 	for iter.Next() {
 		attr := iter.Attribute()
-		r.attrs[attr.Key] = attr.Value
+		m[attr.Key] = attr.Value
 		updateEnt.id[attr.Key] = true
 	}
 
 	iter = attrs.Iter()
 	for iter.Next() {
 		attr := iter.Attribute()
-		r.attrs[attr.Key] = attr.Value
+		m[attr.Key] = attr.Value
 		updateEnt.attrs[attr.Key] = true
 	}
+	r.attrSet = mapAttrsToSet(m)
 	return nil
 }
 
@@ -528,13 +554,14 @@ func (r *Resource) mergeEntityDescr(entity resourceEntityRef, attrs attribute.Se
 		return errors.New("invalid resourceEntityRef")
 	}
 	updateEnt := &r.entityRefs[idx]
-
+	m := attrSetToMap(r.attrSet)
 	iter := attrs.Iter()
 	for iter.Next() {
 		idAttr := iter.Attribute()
-		r.attrs[idAttr.Key] = idAttr.Value
+		m[idAttr.Key] = idAttr.Value
 		updateEnt.attrs[idAttr.Key] = true
 	}
+	r.attrSet = mapAttrsToSet(m)
 	return nil
 }
 
@@ -576,30 +603,26 @@ func (r *Resource) overwriteEntity(
 
 func (r *Resource) setEntityId(ent *resourceEntityRef, id attribute.Set) {
 	iter := id.Iter()
-	ent.id = map[attribute.Key]bool{}
+	ent.id = *attribute.EmptySet()
+	m := attrSetToMap(r.attrSet)
 	for iter.Next() {
 		attr := iter.Attribute()
 		ent.id[attr.Key] = true
-		r.attrs[attr.Key] = attr.Value
+		m[attr.Key] = attr.Value
 	}
+	r.attrSet = mapAttrsToSet(m)
 }
 
 func (r *Resource) setEntityDescr(ent *resourceEntityRef, attrs attribute.Set) {
 	iter := attrs.Iter()
-	ent.attrs = map[attribute.Key]bool{}
+	ent.attrs = *attribute.EmptySet()
+	m := attrSetToMap(r.attrSet)
 	for iter.Next() {
 		attr := iter.Attribute()
 		ent.attrs[attr.Key] = true
-		r.attrs[attr.Key] = attr.Value
+		m[attr.Key] = attr.Value
 	}
-
-}
-
-func (r *Resource) updateCache() {
-	r.attrSet = mapAttrsToSet(r.attrs)
-	for i := range r.entityRefs {
-		r.entityRefs[i].updateCache()
-	}
+	r.attrSet = mapAttrsToSet(m)
 }
 
 func (r *Resource) EntityRefs() []resourceEntityRef {
